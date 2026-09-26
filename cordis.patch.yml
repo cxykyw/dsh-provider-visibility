@@ -1,0 +1,9 @@
+# dsh-provider-visibility bundle patch
+#
+# 挂载声明：把本插件插入 Web profile 的配置树（boot graph）。
+# client-modules 的宿主半区扫描「激活的 Loader 条目」来组装 /plugins 组合包 ——
+# 没有这一行 insert，client.js 不会被纳入引导图，插槽 UI 不会出现。
+# 本插件无服务端行为：lib/index.js 的 apply 为空实现。
+- insert:
+    - id: provider-visibility
+      name: dsh-provider-visibility
