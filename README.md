@@ -2,6 +2,9 @@
 
 DSH（DeepSeek Harness）Web 插件：在 设置 → 模型 的每个自定义提供方卡片上加一枚**胶囊开关**（开=绿）「对话框隐藏 / Hide in chat」。打开后该提供方的模型不出现在对话框的模型选择列表（`/model` 弹窗 + 输入框模型座），关闭即恢复，秒级生效。
 
+> **环境要求**：DSH **0.2.x**（如 `0.2.0-rc.2`）。0.2.x 移除了 client 侧 `settingsScope` service 并更名了
+> `slots.register` 字段（`id`→`registrant`、`order`→`priority`），本版本已按新模型适配；不再兼容 0.1.x。
+
 纯客户端实现，不改 DSH 任何 bundled 文件，npm 升级 DSH 不受影响。
 
 ## 原理
