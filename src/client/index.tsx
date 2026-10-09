@@ -1,6 +1,11 @@
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
+import type { SettingsDescribeFace } from '@deepseek-ai/dsh-client-ui-settings/client'
+import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+// 拉宿主的 SlotMap 增强（settings.models.provider-card 契约在 ui-settings-models
+// 的 slot-contract.ts 里，勿在本插件重复 declare，否则 register 类型推导会冲突）。
+import type {} from '@deepseek-ai/dsh-client-ui-settings-models/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import React, { useCallback, useLayoutEffect, useSyncExternalStore } from 'react'
 
@@ -12,43 +17,35 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
     'provider-visibility': 'label' | 'tooltip'
   }
-  interface SlotMap {
-    'settings.models.provider-card': {
-      kind: 'keyed'
-      scope: 'root'
-      owner: {
-        provider: {
-          provider: string
-          displayName?: string
-          settingsNs: string
-          settingsPath: string[]
-          declared?: boolean
-        }
-        configured: boolean
-        keyConfigured: boolean
-      }
-    }
-  }
+}
+
+/** 卡片扩展位的 owner（ui-settings-models 的 ProviderCardExtrasOwnerProps 运行时形态）。 */
+interface ProviderCardOwner {
+  provider: { provider: string; displayName?: string; settingsNs: string; settingsPath: string[]; declared?: boolean }
+  configured: boolean
+  keyConfigured: boolean
 }
 
 // DSH 0.2.x: the client-side `settingsScope` service was removed along with
-// `dsh-client-runtime`. Settings are read through `ctx.remote.settings` and
-// refreshed on the `settings/document-updated` push, so only services that
-// still exist may be declared here — cordis holds effects until every
-// injected service arrives, and a missing one would silently disable the UI.
+// `dsh-client-runtime`. The shared settings mirror now comes from ui-settings'
+// `configForms` service, settings reads go through `ctx.remote.settings`, and
+// only services that still exist may be declared here — cordis holds effects
+// until every injected service arrives, and a missing one silently disables
+// the UI.
 export const inject = [
   'slots',
   'locale',
   'remote',
   'remote.settings',
   'modelDirectories',
+  'configForms',
 ] as const
 
 /* ------------------------- 状态读取 ------------------------- */
 
 type DescribeView = {
   writable?: boolean
-  namespaces?: Array<{ ns: string; value?: unknown }>
+  namespaces?: ReadonlyArray<{ ns: string; value?: unknown }>
 }
 
 function hiddenSetFromView(view: DescribeView | undefined): Set<string> {
@@ -61,56 +58,6 @@ function hiddenSetFromView(view: DescribeView | undefined): Set<string> {
       return p !== null && typeof p === 'object' && p.pickerHidden === true
     }),
   )
-}
-
-/** 从 remote describe 的各种返回形态里提取带 namespaces 的视图。 */
-function pickView(raw: unknown): DescribeView | undefined {
-  if (!raw || typeof raw !== 'object') return undefined
-  const v = raw as any
-  if (Array.isArray(v.namespaces)) return v
-  if (v.view && Array.isArray(v.view.namespaces)) return v.view
-  if (v.value && Array.isArray(v.value.namespaces)) return v.value
-  return undefined
-}
-
-/**
- * 0.1.x 的 settingsScope.describe() 返回带响应式 store 的镜像；0.2.x 里该
- * service 已删除，改用 remote.settings.describe() 拉取 + settings/document-updated
- * 推送刷新，自建一个接口兼容的 mirror（{ store: {getSnapshot, subscribe}, ensure }），
- * 组件侧的 useSyncExternalStore 用法保持不变。
- */
-function createSettingsMirror(ctx: ClientContext) {
-  let view: DescribeView | undefined
-  const listeners = new Set<() => void>()
-  const store = {
-    getSnapshot: () => view,
-    subscribe: (cb: () => void) => {
-      listeners.add(cb)
-      return () => {
-        listeners.delete(cb)
-      }
-    },
-  }
-  const refresh = async () => {
-    try {
-      const raw: any = await (ctx as any).remote.settings.describe()
-      const next = pickView(raw?.ok ? raw.value : raw)
-      if (next !== view) {
-        view = next
-        for (const cb of listeners) cb()
-      }
-    } catch (error) {
-      console.warn('[provider-visibility] settings describe failed:', error)
-    }
-  }
-  const mirror = { store, ensure: () => refresh() }
-  ctx.effect(() => {
-    void refresh()
-    return ctx.on('settings/document-updated' as never, (() => {
-      void refresh()
-    }) as never)
-  }, 'provider-visibility: settings mirror')
-  return mirror
 }
 
 /* ------------------------- 胶囊开关 ------------------------- */
@@ -160,15 +107,15 @@ function CapsuleSwitch({ on, pending, onToggle }: { on: boolean; pending: boolea
 }
 
 type ToggleProps = {
-  provider: { provider: string; settingsNs: string; settingsPath: string[] }
-  face: any
+  provider: ProviderCardOwner['provider']
+  face: SettingsDescribeFace
   mutate: (ns: string, ops: Array<Record<string, unknown>>) => Promise<unknown>
   t: (key: 'label' | 'tooltip') => string
 }
 
 function ProviderVisibilityToggle({ provider, face, mutate, t }: ToggleProps) {
-  const getSnapshot = useCallback(() => face.store.getSnapshot(), [face])
-  const subscribe = useCallback((cb: () => void) => face.store.subscribe(cb), [face])
+  const getSnapshot = useCallback(() => face.getSnapshot(), [face])
+  const subscribe = useCallback((cb: () => void) => face.subscribe(cb), [face])
   const snapshot = useSyncExternalStore(subscribe, getSnapshot)
   const hidden = hiddenSetFromView(snapshot?.view).has(provider.provider)
 
@@ -281,11 +228,24 @@ export function apply(ctx: ClientContext): void {
     'provider-visibility: locale',
   )
 
-  const mirror: any = createSettingsMirror(ctx)
-  mirror.ensure?.()
+  // 0.2.x 的共享 settings 镜像（ui-settings 的 configForms service 提供），
+  // 与宿主 Models 页读同一份数据；写成功后用 acceptView 立即折叠，不等推送。
+  const mirror: SettingsDescribeFace = (ctx as any).configForms.describe()
+  void mirror.ensure()
 
-  const mutate = (ns: string, ops: Array<Record<string, unknown>>) =>
-    (ctx as any).remote.settings.mutate(ns, ops, undefined)
+  const mutate = async (ns: string, ops: Array<Record<string, unknown>>) => {
+    const res: any = await (ctx as any).remote.settings.mutate(ns, ops, undefined)
+    if (res?.ok && res.value) (mirror as any).acceptView(res.value)
+    return res
+  }
+
+  // 推送刷新走 remote 通道（ctx.on 的本地总线收不到 remote 推送）。
+  ctx.effect(() => {
+    const off = (ctx.remote as any).$on('settings/document-updated', () => {
+      void mirror.ensure()
+    })
+    return off
+  }, 'provider-visibility: settings push')
 
   // 过滤：modelDirectories 由 ui-model-selection 提供，core bundle 先于用户插件激活
   const modelDirectories: any = (ctx as any).modelDirectories
@@ -298,11 +258,10 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('settings.models.provider-card', () =>
     ctx.slots.register(
       {
-        // 0.2.x：id → registrant（缺省自动取 fiber name），order → priority；
-        // options 在运行时整体透传，字段名按新类型走。
+        // 0.2.x：id → registrant（缺省自动取 fiber name）；order 仍为运行时排序字段。
         name: 'settings.models.provider-card',
         key: LLM_NS,
-        priority: 50,
+        order: 50,
         locale: NS,
         registrant: 'provider-visibility',
         inject: () => ({ face: mirror, mutate, t: ctx.locale.bind(NS) }),
